@@ -1,0 +1,11 @@
+{
+	"id": "obsidian-yandex-calendar-integration",
+	"name": "Yandex Calendar Integration",
+	"version": "0.0.1",
+	"minAppVersion": "0.0.1",
+	"description": "Plugin for integrating daily notes with Yandex Calendar",
+	"author": "CaDuCT-3aTeuHuK",
+	"authorUrl": "https://github.com/CaDuCT-3aTeuHuK",
+	"helpUrl": "",
+	"isDesktopOnly": false
+}
