@@ -1,19 +1,34 @@
 'use strict';
 
-var obsidian = require('obsidian')
+var obsidian = require('obsidian');
 
 class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     settings = null;
+    secureSettings = null;
+
     async onload() {
         console.log('Yandex Calendar plugin is starting...');
-        this.secureSettings = new SecureSettings(this);
-        await this.loadSettings();
-        this.addSettingTab(new YandexCalendarIntegrationSettingTab(this.app, this));
+        this.initializePlugin();
+    }
+
+    async initializePlugin() {
+        try {
+            this.secureSettings = new SecureSettings(this);
+            await this.loadSettings();
+            this.addSettingTab(new YandexCalendarIntegrationSettingTab(this.app, this));
+            this.registerCommands();
+        } catch (error) {
+            console.error('Failed to initialize plugin:', error);
+            new Notice('Failed to initialize Yandex Calendar plugin');
+        }
+    }
+
+    registerCommands() {
         this.addCommand({
             id: 'insert-event-from-yandex-calendar-at-cursor',
             name: 'Вставить событие из Яндекс Календаря в позицию курсора',
             editorCallback: (editor) => {
-                this.insertEvent(editor, this.secureSettings);
+                this.insertEvent(editor);
             }
         });
     }
@@ -22,6 +37,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         try {
             const token = btoa(`${email}:${password}`);
             const url = baseUrl + uri;
+
             const response = await requestUrl({
                 url: url,
                 method: 'REPORT',
@@ -32,40 +48,35 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 },
                 body: body
             });
-            let data = response.text;
+
             new Notice('Яндекс Календарь успешно вернул события');
-            return data;
+            return response.text;
         } catch (error) {
             console.error('Запрос к Яндекс Календарю завершился ошибкой: ', error);
             new Notice('Запрос к Яндекс Календарю завершился ошибкой: ' + error.message);
+            throw error;
         }
     }
 
     parseCalendarEvents(xmlText) {
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-
         const responses = xmlDoc.getElementsByTagNameNS('DAV:', 'response');
-        const events = [];
-
-        for (let response of responses) {
+        
+        return Array.from(responses).map(response => {
             try {
-                // Получаем iCalendar данные
                 const calendarData = response.getElementsByTagNameNS('urn:ietf:params:xml:ns:caldav', 'calendar-data')[0];
-                if (!calendarData) continue;
+                if (!calendarData) return null;
 
                 const icalText = calendarData.textContent;
-
-                // Парсим VEVENT из iCalendar
                 const veventMatch = icalText.match(/BEGIN:VEVENT([\s\S]*?)END:VEVENT/);
-                const event = this.parseYandexCalendar(veventMatch);
 
-                events.push(event);
+                return veventMatch ? this.parseYandexCalendar(veventMatch) : null;
             } catch (error) {
                 console.error('Error parsing event:', error);
+                return null;
             }
-        }
-        return events;
+        }).filter(event => event !== null);
     }
 
     parseYandexCalendar(data) {
@@ -102,6 +113,8 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     getTimeOnly(dateString) {
+        if (!dateString) return '';
+        
         const date = new Date(dateString);
         return date.toLocaleTimeString('ru-RU', {
             hour: '2-digit',
@@ -110,14 +123,16 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     parseYandexCalendarDate(dateStr) {
-        const year = dateStr.substring(0, 4);
-        const month = dateStr.substring(4, 6);
-        const day = dateStr.substring(6, 8);
-        const hour = dateStr.substring(9, 11);
-        const minute = dateStr.substring(11, 13);
-        const second = dateStr.substring(13, 15);
+        const [year, month, day, hour, minute, second] = [
+            dateStr.substring(0, 4),
+            dateStr.substring(4, 6),
+            dateStr.substring(6, 8),
+            dateStr.substring(9, 11) || '00',
+            dateStr.substring(11, 13) || '00',
+            dateStr.substring(13, 15) || '00'
+        ];
 
-        const date = new Date(
+        return new Date(
             parseInt(year),
             parseInt(month) - 1,
             parseInt(day),
@@ -125,12 +140,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             parseInt(minute),
             parseInt(second)
         );
-
-        return date;
-    }
-
-    setTextToCodeBlock(el, text) {
-        el.setText(text);
     }
 
     //Для настроек плагина
@@ -142,39 +151,76 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         await this.saveData(this.settings)
     }
 
-    async insertEvent(editor, secureSettings) {
+    async insertEvent(editor) {
+        try {
+            if (!this.validateSecurityRequirements()) {
+                return;
+            }
+
+            const events = await this.getEvents();
+            const pattern = this.settings.pattern;
+
+            const sortedEvents = events.sort((a, b) => a.dateStart.getTime() - b.dateStart.getTime());
+            const formattedEvents = await this.formatEventsByPattern(sortedEvents, pattern);
+           
+            const cursor = editor.getCursor();
+            editor.replaceRange(formattedEvents, cursor);
+        } catch (error) {
+            console.error('Failed to insert event:', error);
+            new Notice('Failed to insert event from Yandex Calendar');
+        }
+    }
+
+    validateSecurityRequirements() {
         if (!this.secureSettings.hasMasterKey()) {
             new Notice('Please set master key first in settings');
-            return;
+            return false;
         }
         if (!this.secureSettings.hasStoredPassword()) {
             new Notice('No password stored. Please save a password first.');
-            return;
+            return false;
         }
-        let events = await this.getEvent(secureSettings);
-        const pattern = this.settings.pattern;
-        let patternFormattedEvents = await this.formatByPatternEvents(events.sort((a, b) => a.dateStart.getTime() - b.dateStart.getTime()), pattern);
-        const cursor = editor.getCursor();
-        editor.replaceRange(patternFormattedEvents, cursor);
+        return true;
     }
 
     async getStoredPassword() {
-        if (!this.secureSettings.hasMasterKey() || !this.secureSettings.hasStoredPassword()) {
-            return null;
-        }
-        return await this.secureSettings.getPassword();
+        return this.secureSettings.hasMasterKey() && this.secureSettings.hasStoredPassword() 
+            ? await this.secureSettings.getPassword() 
+            : null;
     }
 
-    async getEvent(secureSettings) {
-        const email = this.settings.email; //Todo: обложить try-catch'ами
-        const password = await this.getStoredPassword();
-        const baseUrl = 'https://caldav.yandex.ru';
-        const uri = `/calendars/${email}/events-default`;
-        const currentDate = this.getCurrentDailyNoteDate();
-        let events = []
-        if (currentDate != null) {
+    async getEvents() {
+        try {
+            const email = this.settings.email;
+            const password = await this.getStoredPassword();
+
+            if (!email || !password) {
+                throw new Error('Email or password not configured');
+            }
+
+            const baseUrl = 'https://caldav.yandex.ru';
+            const uri = `/calendars/${email}/events-default`;
+            const currentDate = this.getCurrentDailyNoteDate();
+
+            if (!currentDate) {
+                return [];
+            }
+
             const { start, end } = this.getDateRange(currentDate);
-            const body = `<?xml version="1.0" encoding="utf-8" ?>
+            const body = this.buildCalendarQuery(start, end);
+
+            const data = await this.makeRequest(email, password, baseUrl, uri, body);
+            const events = this.parseCalendarEvents(data);
+            console.log('Parsed events: ', events);
+            return events;
+        } catch (error) {
+            console.error('Failed to get events:', error);
+            return [];
+        }
+    }
+
+    buildCalendarQuery(start, end) {
+        return `<?xml version="1.0" encoding="utf-8" ?>
 <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
     <D:prop>
         <D:getetag/>
@@ -198,30 +244,23 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         </C:comp-filter>
     </C:filter>
 </C:calendar-query>`;
-            let data = await this.makeRequest(email, password, baseUrl, uri, body);
-            events = this.parseCalendarEvents(data);
-            console.log('Parsed events: ', events);
-            return events;
-        }
-        return events
     }
 
     getCurrentDailyNoteDate() {
-        const activeFile = app.workspace.getActiveFile();
+        const activeFile = this.app.workspace.getActiveFile();
         const dailyNotes = this.getDailyNotesInstance();
 
         if (!dailyNotes) {
             new Notice('Плагин Daily Notes не найден');
-            return;
+            return null;
         }
 
         if (!activeFile) {
             new Notice('Нет активной заметки');
-            return;
+            return null;
         }
 
-        // Will return default date format if "Date format" field was empty
-        let dateFormat = dailyNotes.getFormat();
+        const dateFormat = dailyNotes.getFormat();
         
         if (this.isDailyNote(dateFormat, activeFile.basename)) {
             const noteDate = this.parseDateFromString(dateFormat, activeFile.basename);
@@ -234,15 +273,17 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     isDailyNote(template, str) {
-        const regexPattern = template
+        const regexPattern = this.createDateRegexPattern(template);
+        return new RegExp(`^${regexPattern}$`).test(str);
+    }
+
+    createDateRegexPattern(template) {
+        return template
             .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
             .replace(/YYYY/g, '(\\d{4})')
             .replace(/YY/g, '(\\d{2})')
             .replace(/MM/g, '(\\d{2})')
             .replace(/DD/g, '(\\d{2})');
-
-        const regex = new RegExp(`^${regexPattern}$`);
-        return regex.test(str);
     }
 
     parseDateFromString(template, str) {
@@ -333,65 +374,64 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
 
 
     getDailyNotesInstance() {
-        if (app.internalPlugins) {
-            const plugin = app.internalPlugins.getPluginById('daily-notes');
-            if (plugin && plugin.instance) {
-                return plugin.instance;
-            }
+        if (this.app.internalPlugins) {
+            const plugin = this.app.internalPlugins.getPluginById('daily-notes');
+            return plugin?.instance || null;
         }
         return null;
     }
 
-    getDateRange(currentDate) {  
-    // Создаем даты начала и конца в локальном часовом поясе
-    const start = new Date(
-        currentDate.getFullYear(),
-        currentDate.getMonth(),
-        currentDate.getDate(),
-        0, 0, 0, 0
-    );
-    
-    const end = new Date(
-        currentDate.getFullYear(),
-        currentDate.getMonth(),
-        currentDate.getDate() + 1,
-        0, 0, 0, 0
-    );
-    
-    // Форматируем в нужный строковый формат
-    const formatDate = (date) => {
-        const year = date.getUTCFullYear();
-        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-        const day = String(date.getUTCDate()).padStart(2, '0');
-        const hours = String(date.getUTCHours()).padStart(2, '0');
-        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-        
-        return `${year}${month}${day}T${hours}${minutes}${seconds}Z`;
-    };
-    
-    return {
-        start: formatDate(start),
-        end: formatDate(end)
-    };
-}
+    getDateRange(currentDate) {
+        // Создаем даты начала и конца в локальном часовом поясе
+        const start = new Date(
+            currentDate.getFullYear(),
+            currentDate.getMonth(),
+            currentDate.getDate(),
+            0, 0, 0, 0
+        );
 
-    async formatByPatternEvents(events, pattern) {
+        const end = new Date(
+            currentDate.getFullYear(),
+            currentDate.getMonth(),
+            currentDate.getDate() + 1,
+            0, 0, 0, 0
+        );
+
+        // Форматируем в нужный строковый формат
+        const formatDate = (date) => {
+            const year = date.getUTCFullYear();
+            const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+            const day = String(date.getUTCDate()).padStart(2, '0');
+            const hours = String(date.getUTCHours()).padStart(2, '0');
+            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+            const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+
+            return `${year}${month}${day}T${hours}${minutes}${seconds}Z`;
+        };
+
+        return {
+            start: formatDate(start),
+            end: formatDate(end)
+        };
+    }
+
+    async formatEventsByPattern(events, pattern) {
         let patternFormattedEvents = '';
         for (let event of events) {
             let formatText = event.formatByPatternEvent(pattern);
             patternFormattedEvents = patternFormattedEvents + formatText + '\n';
         }
-        return await this.formatTemplateLiterals(patternFormattedEvents);
+        return await this.unescapeTemplateLiterals(patternFormattedEvents);
     }
 
-    async formatTemplateLiterals(text) {
-        return text.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r');
+    async unescapeTemplateLiterals(text) {
+        return text.replace(/\\n/g, '\n')
+            .replace(/\\t/g, '\t')
+            .replace(/\\r/g, '\r');
     }
 }
 
 class CalendarEventDto {
-    // Объявление полей класса
     summary = '';
     dateStart = '';
     dateEnd = '';
@@ -400,7 +440,6 @@ class CalendarEventDto {
     description = '';
     url = '';
 
-    // Конструктор для инициализации полей
     constructor(summary, dateStart, dateEnd, timeStart, timeEnd, description, url) {
         this.summary = summary;
         this.dateStart = dateStart;
@@ -412,24 +451,13 @@ class CalendarEventDto {
     }
 
     formatByPatternEvent(pattern) {
-        return new Proxy({}, {
-            get: (target, prop) => {
-                if (prop === 'toString') {
-                    return () => pattern.replace(/\${(.*?)}/g, (match, key) => {
-                        // Если поле существует и не пустое - возвращаем значение
-                        // Если поле не существует или пустое - возвращаем пустую строку
-                        return this[key] !== undefined && this[key] !== '' ? this[key] : '';
-                    });
-                }
-                return this[prop] !== undefined ? this[prop] : '';
-            }
-        }).toString();
+        return pattern.replace(/\${(.*?)}/g, (match, key) => {
+            return this.hasOwnProperty(key) && this[key] ? this[key] : '';
+        });
     }
 }
 
 class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
-    plugin = null
-
     constructor(app, plugin) {
         super(app, plugin);
         this.plugin = plugin;
@@ -440,11 +468,14 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
         const { secureSettings } = this.plugin;
 
         containerEl.empty();
+        containerEl.createEl('h2', { text: 'Yandex Calendar Integration' });
 
-        containerEl.createEl('h2', {
-            text: 'Yandex Calendar Integration'
-        });
+        this.renderEmailSetting(containerEl);
+        this.renderSecuritySettings(containerEl, secureSettings);
+        this.renderPatternSetting(containerEl);
+    }
 
+    renderEmailSetting(containerEl) {
         new obsidian.Setting(containerEl)
             .setName('Email')
             .setDesc('Enter the email address that is used for scheduling in the calendar')
@@ -452,18 +483,22 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
                 .setPlaceholder('Enter your email')
                 .setValue(this.plugin.settings.email)
                 .onChange(async (value) => {
-                    this.plugin.settings.email = value
-                    await this.plugin.saveSettings()
+                    this.plugin.settings.email = value;
+                    await this.plugin.saveSettings();
                 })
             );
+    }
 
+    renderSecuritySettings(containerEl, secureSettings) {
         // Если мастер-ключ не установлен - показываем настройку
         if (!secureSettings.hasMasterKey()) {
-            this.showMasterKeySetup(containerEl);
+            this.renderMasterKeySetup(containerEl);
         } else {
-            this.showPasswordManagement(containerEl);
+            this.renderPasswordManagement(containerEl);
         }
+    }
 
+    renderPatternSetting(containerEl) {
         new obsidian.Setting(containerEl)
             .setName('Event task pattern')
             .setDesc('Enter a pattern for the event task')
@@ -471,14 +506,14 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
                 .setPlaceholder('Enter pattern')
                 .setValue(this.plugin.settings.pattern)
                 .onChange(async (value) => {
-                    this.plugin.settings.pattern = value
-                    await this.plugin.saveSettings()
+                    this.plugin.settings.pattern = value;
+                    await this.plugin.saveSettings();
                 })
             );
     }
 
     // Настройка мастер-ключа (только при первом запуске)
-    showMasterKeySetup(containerEl) {
+    renderMasterKeySetup(containerEl) {
         containerEl.createEl('p', {
             text: 'Set up a master key to securely store your passwords. You will only need to enter this once.'
         });
@@ -491,11 +526,8 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
             .addText(text => text
                 .setPlaceholder('Enter master key')
                 .setValue('')
-                .onChange((value) => {
-                    masterKey = value;
-                }));
-
-        new obsidian.Setting(containerEl)
+                .onChange((value) => masterKey = value)
+            )
             .addButton(button => button
                 .setButtonText('Set Master Key')
                 .setCta()
@@ -505,32 +537,39 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
                         return;
                     }
 
+                    // Сохраняем мастер-ключ в памяти
                     const success = await this.plugin.secureSettings.setMasterKey(masterKey);
 
-                    // Сохраняем мастер-ключ в памяти
-                    this.plugin.secureSettings.setMasterKey(masterKey);
-                    new Notice('Master key set!');
-
-                    // Перезагружаем интерфейс
-                    this.display();
+                    if (success) {
+                        new Notice('Master key set!');
+                        // Перезагружаем интерфейс
+                        this.display();
+                    } else {
+                        new Notice('Failed to set master key');
+                    }
                 }));
     }
 
     // Управление паролями (после настройки мастер-ключа)
-    showPasswordManagement(containerEl) {
+    renderPasswordManagement(containerEl) {
         containerEl.createEl('p', {
             text: '✓ Master key is set. You can now manage your passwords.'
         });
 
-        let password = '';
+        this.renderPasswordInput(containerEl);
+        this.renderPasswordActions(containerEl);
+    }
 
+    renderPasswordInput(containerEl) {
         const linkContainer = containerEl.createDiv();
-
         linkContainer.appendText("Enter the ");
+        
         const linkElement = document.createElement('a');
         linkElement.href = 'https://id.yandex.ru/security/app-passwords';
         linkElement.textContent = 'app password';
         linkContainer.appendChild(linkElement);
+
+        let password = '';
 
         // Сохранение пароля
         new obsidian.Setting(containerEl)
@@ -539,11 +578,8 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
             .addText(text => text
                 .setPlaceholder('Enter password')
                 .setValue('')
-                .onChange((value) => {
-                    password = value;
-                }));
-
-        new obsidian.Setting(containerEl)
+                .onChange((value) => password = value)
+            )
             .addButton(button => button
                 .setButtonText('Save Password')
                 .setCta()
@@ -555,9 +591,12 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
 
                     await this.plugin.secureSettings.savePassword(password);
                     new Notice('Password saved securely!');
-                    password = '';
-                }));
+                    this.display();
+                })
+            );
+    }
 
+    renderPasswordActions(containerEl) {
         // Если пароль уже сохранен - показываем опции
         if (this.plugin.secureSettings.hasStoredPassword()) {
             new obsidian.Setting(containerEl)
@@ -567,21 +606,20 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
                     .setButtonText('Load Password')
                     .onClick(async () => {
                         const storedPassword = await this.plugin.secureSettings.getPassword();
-                        if (storedPassword) {
-                            new Notice('Password loaded to plugin memory');
-                            // Пароль теперь доступен через this.plugin.getStoredPassword()
-                        } else {
-                            new Notice('Failed to load password');
-                        }
-                    }))
+                        // Пароль теперь доступен через this.plugin.getStoredPassword()
+                        new Notice(storedPassword ? 'Password loaded to plugin memory' : 'Failed to load password');
+                    })
+                )
                 .addButton(button => button
                     .setButtonText('Clear Password')
                     .onClick(async () => {
                         this.plugin.secureSettings.clearPassword();
                         new Notice('Password cleared');
                         this.display();
-                    }));
+                    })
+                );
         }
+
         // Опция сброса мастер-ключа
         new obsidian.Setting(containerEl)
             .setName('Security')
@@ -589,16 +627,17 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
             .addButton(button => button
                 .setButtonText('Reset Master Key')
                 .onClick(async () => {
-                    this.plugin.secureSettings.clearPassword();
-                    this.plugin.secureSettings.clearMasterKey();
+                    this.plugin.secureSettings.clearAll();
                     new Notice('Master key reset');
                     this.display();
-                }));
+                })
+            );
     }
 }
 
 const DEFAULT_SETTINGS = {
     pattern: "- [ ] ${timeStart} - ${timeEnd}: ${summary}\n\tОписание: ${description}\n\tСсылка на событие: ${url}",
+    email: ''
 }
 
 class SecureSettings {
