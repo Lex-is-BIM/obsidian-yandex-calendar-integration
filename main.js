@@ -172,10 +172,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     validateSecurityRequirements() {
-        if (!this.secureSettings.hasMasterKey()) {
-            new Notice('Please set master key first in settings');
-            return false;
-        }
         if (!this.secureSettings.hasStoredPassword()) {
             new Notice('No password stored. Please save a password first.');
             return false;
@@ -184,7 +180,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     async getStoredPassword() {
-        return this.secureSettings.hasMasterKey() && this.secureSettings.hasStoredPassword() 
+        return this.secureSettings.hasStoredPassword() 
             ? await this.secureSettings.getPassword() 
             : null;
     }
@@ -195,6 +191,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             const password = await this.getStoredPassword();
 
             if (!email || !password) {
+                new Notice('Email or password not configured');
                 throw new Error('Email or password not configured');
             }
 
@@ -465,13 +462,12 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
 
     display() {
         const { containerEl } = this;
-        const { secureSettings } = this.plugin;
 
         containerEl.empty();
         containerEl.createEl('h2', { text: 'Yandex Calendar Integration' });
 
         this.renderEmailSetting(containerEl);
-        this.renderSecuritySettings(containerEl, secureSettings);
+        this.renderPasswordInput(containerEl);
         this.renderPatternSetting(containerEl);
     }
 
@@ -489,80 +485,9 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
             );
     }
 
-    renderSecuritySettings(containerEl, secureSettings) {
-        // Если мастер-ключ не установлен - показываем настройку
-        if (!secureSettings.hasMasterKey()) {
-            this.renderMasterKeySetup(containerEl);
-        } else {
-            this.renderPasswordManagement(containerEl);
-        }
-    }
-
-    renderPatternSetting(containerEl) {
-        new obsidian.Setting(containerEl)
-            .setName('Event task pattern')
-            .setDesc('Enter a pattern for the event task')
-            .addText((text) => text
-                .setPlaceholder('Enter pattern')
-                .setValue(this.plugin.settings.pattern)
-                .onChange(async (value) => {
-                    this.plugin.settings.pattern = value;
-                    await this.plugin.saveSettings();
-                })
-            );
-    }
-
-    // Настройка мастер-ключа (только при первом запуске)
-    renderMasterKeySetup(containerEl) {
-        containerEl.createEl('p', {
-            text: 'Set up a master key to securely store your passwords. You will only need to enter this once.'
-        });
-
-        let masterKey = '';
-
-        new obsidian.Setting(containerEl)
-            .setName('Master Key')
-            .setDesc('This key will be used to encrypt your passwords')
-            .addText(text => text
-                .setPlaceholder('Enter master key')
-                .setValue('')
-                .onChange((value) => masterKey = value)
-            )
-            .addButton(button => button
-                .setButtonText('Set Master Key')
-                .setCta()
-                .onClick(async () => {
-                    if (!masterKey) {
-                        new Notice('Please enter a master key');
-                        return;
-                    }
-
-                    // Сохраняем мастер-ключ в памяти
-                    const success = await this.plugin.secureSettings.setMasterKey(masterKey);
-
-                    if (success) {
-                        new Notice('Master key set!');
-                        // Перезагружаем интерфейс
-                        this.display();
-                    } else {
-                        new Notice('Failed to set master key');
-                    }
-                }));
-    }
-
-    // Управление паролями (после настройки мастер-ключа)
-    renderPasswordManagement(containerEl) {
-        containerEl.createEl('p', {
-            text: '✓ Master key is set. You can now manage your passwords.'
-        });
-
-        this.renderPasswordInput(containerEl);
-        this.renderPasswordActions(containerEl);
-    }
-
     renderPasswordInput(containerEl) {
         const linkContainer = containerEl.createDiv();
-        linkContainer.appendText("Enter the ");
+        linkContainer.appendText("Enter your Yandex Calendar ");
         
         const linkElement = document.createElement('a');
         linkElement.href = 'https://id.yandex.ru/security/app-passwords';
@@ -593,43 +518,26 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
                     new Notice('Password saved securely!');
                     this.display();
                 })
+            ).addButton(button => button
+                .setButtonText('Clear Password')
+                .onClick(async () => {
+                    this.plugin.secureSettings.clearPassword();
+                    new Notice('Password cleared');
+                    this.display();
+                })
             );
     }
 
-    renderPasswordActions(containerEl) {
-        // Если пароль уже сохранен - показываем опции
-        if (this.plugin.secureSettings.hasStoredPassword()) {
-            new obsidian.Setting(containerEl)
-                .setName('Stored Password')
-                .setDesc('Manage your stored password')
-                .addButton(button => button
-                    .setButtonText('Load Password')
-                    .onClick(async () => {
-                        const storedPassword = await this.plugin.secureSettings.getPassword();
-                        // Пароль теперь доступен через this.plugin.getStoredPassword()
-                        new Notice(storedPassword ? 'Password loaded to plugin memory' : 'Failed to load password');
-                    })
-                )
-                .addButton(button => button
-                    .setButtonText('Clear Password')
-                    .onClick(async () => {
-                        this.plugin.secureSettings.clearPassword();
-                        new Notice('Password cleared');
-                        this.display();
-                    })
-                );
-        }
-
-        // Опция сброса мастер-ключа
+    renderPatternSetting(containerEl) {
         new obsidian.Setting(containerEl)
-            .setName('Security')
-            .setDesc('Reset master key (this will delete all stored passwords)')
-            .addButton(button => button
-                .setButtonText('Reset Master Key')
-                .onClick(async () => {
-                    this.plugin.secureSettings.clearAll();
-                    new Notice('Master key reset');
-                    this.display();
+            .setName('Event task pattern')
+            .setDesc('Enter a pattern for the event task')
+            .addText((text) => text
+                .setPlaceholder('Enter pattern')
+                .setValue(this.plugin.settings.pattern)
+                .onChange(async (value) => {
+                    this.plugin.settings.pattern = value;
+                    await this.plugin.saveSettings();
                 })
             );
     }
@@ -643,234 +551,47 @@ const DEFAULT_SETTINGS = {
 class SecureSettings {
     constructor(plugin) {
         this.plugin = plugin;
-        this.storageKey = `secure-settings-${plugin.manifest.id}`;
-        this.masterKeyStorageKey = `master-key-${plugin.manifest.id}`;
-        this.masterKey = null;
-
-        this.loadMasterKey();
+        this.serviceId = `yandex-calendar-${plugin.manifest.id}`;
     }
 
-    loadMasterKey() {
+    async savePassword(password) {
         try {
-            const encryptedMasterKey = localStorage.getItem(this.masterKeyStorageKey);
-            if (encryptedMasterKey) {
-                // Мастер-ключ зашифрован с помощью ключа, основанного на appId
-                const appKey = this.generateAppKey();
-                const decrypted = this.simpleDecrypt(encryptedMasterKey, appKey);
-                if (decrypted) {
-                    this.masterKey = decrypted;
-                }
-            }
-        } catch (error) {
-            console.error('Failed to load master key:', error);
-        }
-    }
-
-    // Генерация ключа на основе appId (уникально для каждого vault)
-    generateAppKey() {
-        const appId = this.plugin.app.appId;
-        let hash = 0;
-        for (let i = 0; i < appId.length; i++) {
-            const char = appId.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash = hash & hash; // Convert to 32bit integer
-        }
-        return hash.toString(16).padStart(16, '0');
-    }
-
-    // Простое шифрование для мастер-ключа (не для паролей!)
-    simpleEncrypt(text, key) {
-        try {
-            let result = '';
-            for (let i = 0; i < text.length; i++) {
-                const charCode = text.charCodeAt(i) ^ key.charCodeAt(i % key.length);
-                result += String.fromCharCode(charCode);
-            }
-            return btoa(result);
-        } catch (error) {
-            return null;
-        }
-    }
-
-    // Простое дешифрование для мастер-ключа
-    simpleDecrypt(encryptedText, key) {
-        try {
-            const text = atob(encryptedText);
-            let result = '';
-            for (let i = 0; i < text.length; i++) {
-                const charCode = text.charCodeAt(i) ^ key.charCodeAt(i % key.length);
-                result += String.fromCharCode(charCode);
-            }
-            return result;
-        } catch (error) {
-            return null;
-        }
-    }
-
-    // Сохранение мастер-ключа (зашифрованного)
-    saveMasterKey(masterKey) {
-        try {
-            const appKey = this.generateAppKey();
-            const encryptedMasterKey = this.simpleEncrypt(masterKey, appKey);
-            if (encryptedMasterKey) {
-                localStorage.setItem(this.masterKeyStorageKey, encryptedMasterKey);
-                this.masterKey = masterKey;
+            // Используем встроенный API Obsidian для безопасного хранения
+            if (this.plugin.app.saveLocalStorage) {
+                await this.plugin.app.saveLocalStorage(this.serviceId, password);
                 return true;
             }
         } catch (error) {
-            console.error('Failed to save master key:', error);
+            console.error('Failed to save password:', error);
         }
         return false;
     }
 
-    // Установка мастер-ключа (сохраняет его)
-    async setMasterKey(key) {
-        const success = this.saveMasterKey(key);
-        if (success) {
-            // Если есть сохраненный пароль, проверяем что можем его расшифровать
-            if (this.hasStoredPassword()) {
-                const test = await this.getPassword();
-                if (!test) {
-                    // Не удалось расшифровать - вероятно неверный ключ
-                    this.clearMasterKey();
-                    return false;
-                }
-            }
-            return true;
-        }
-        return false;
-    }
-
-    hasMasterKey() {
-        return this.masterKey !== null;
-    }
-
-    async encryptPassword(password) {
-        if (!this.masterKey) throw new Error('Master key not set');
-
-        const encoder = new TextEncoder();
-        const data = encoder.encode(password);
-
-        // Генерируем случайный IV
-        const iv = crypto.getRandomValues(new Uint8Array(12));
-
-        // Создаем ключ из мастер-пароля
-        const keyMaterial = await crypto.subtle.importKey(
-            'raw',
-            encoder.encode(this.masterKey),
-            'PBKDF2',
-            false,
-            ['deriveBits', 'deriveKey']
-        );
-
-        const key = await crypto.subtle.deriveKey(
-            {
-                name: 'PBKDF2',
-                salt: encoder.encode('obsidian-salt'),
-                iterations: 100000,
-                hash: 'SHA-256'
-            },
-            keyMaterial,
-            { name: 'AES-GCM', length: 256 },
-            false,
-            ['encrypt', 'decrypt']
-        );
-
-        const encrypted = await crypto.subtle.encrypt(
-            { name: 'AES-GCM', iv: iv },
-            key,
-            data
-        );
-
-        // Сохраняем IV + зашифрованные данные
-        const result = {
-            iv: Array.from(iv),
-            data: Array.from(new Uint8Array(encrypted))
-        };
-
-        return btoa(JSON.stringify(result));
-    }
-
-    // Дешифрование
-    async decryptPassword(encryptedData) {
-        if (!this.masterKey) throw new Error('Master key not set');
-
+    async getPassword() {
         try {
-            const decoder = new TextDecoder();
-            const encoder = new TextEncoder();
-
-            const encryptedObj = JSON.parse(atob(encryptedData));
-            const iv = new Uint8Array(encryptedObj.iv);
-            const data = new Uint8Array(encryptedObj.data);
-
-            const keyMaterial = await crypto.subtle.importKey(
-                'raw',
-                encoder.encode(this.masterKey),
-                'PBKDF2',
-                false,
-                ['deriveBits', 'deriveKey']
-            );
-
-            const key = await crypto.subtle.deriveKey(
-                {
-                    name: 'PBKDF2',
-                    salt: encoder.encode('obsidian-salt'),
-                    iterations: 100000,
-                    hash: 'SHA-256'
-                },
-                keyMaterial,
-                { name: 'AES-GCM', length: 256 },
-                false,
-                ['encrypt', 'decrypt']
-            );
-
-            const decrypted = await crypto.subtle.decrypt(
-                { name: 'AES-GCM', iv: iv },
-                key,
-                data
-            );
-
-            return decoder.decode(decrypted);
+            if (this.plugin.app.loadLocalStorage) {
+                return await this.plugin.app.loadLocalStorage(this.serviceId);
+            }
         } catch (error) {
-            console.error('Decryption failed:', error);
-            return null;
+            console.error('Failed to load password:', error);
         }
+        return null;
     }
 
-    // Сохранение зашифрованного пароля
-    async savePassword(password, masterKey) {
-        const encrypted = await this.encryptPassword(password, masterKey);
-        localStorage.setItem(this.storageKey, encrypted);
-        return true;
+    async hasStoredPassword() {
+        // Проверяем через асинхронный метод
+        return this.getPassword().then(pwd => pwd !== null);
     }
 
-    // Получение расшифрованного пароля
-    async getPassword(masterKey) {
-        const encrypted = localStorage.getItem(this.storageKey);
-        if (!encrypted) return null;
-
-        return await this.decryptPassword(encrypted, masterKey);
-    }
-
-    // Проверка существования сохраненного пароля
-    hasStoredPassword() {
-        return localStorage.getItem(this.storageKey) !== null;
-    }
-
-    // Удаление сохраненного пароля
-    clearPassword() {
-        localStorage.removeItem(this.storageKey);
-    }
-
-    // Очистка мастер-ключа из памяти
-    clearMasterKey() {
-        this.masterKey = null;
-    }
-
-    // Полный сброс
-    clearAll() {
-        this.clearPassword();
-        this.clearMasterKey();
+     async clearPassword() {
+        try {
+            if (this.plugin.app.saveLocalStorage) {
+                await this.plugin.app.saveLocalStorage(this.serviceId, null);
+                console.log('Cleared password via saveLocalStorage(null)');
+            }
+        } catch (error) {
+            console.error('Failed to clear password:', error);
+        }
     }
 }
 
