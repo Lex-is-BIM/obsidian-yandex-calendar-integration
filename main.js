@@ -24,11 +24,21 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     registerCommands() {
+        // Основная команда - вставка событий
         this.addCommand({
             id: 'insert-event-from-yandex-calendar-at-cursor',
             name: 'Вставить событие из Яндекс Календаря в позицию курсора',
             editorCallback: (editor) => {
                 this.insertEvent(editor);
+            }
+        });
+
+        // ТЕСТОВАЯ КОМАНДА - поиск коллекции задач
+        this.addCommand({
+            id: 'test-find-todo-collection',
+            name: 'Тест: найти коллекцию задач',
+            callback: () => {
+                this.testFindTodo();
             }
         });
     }
