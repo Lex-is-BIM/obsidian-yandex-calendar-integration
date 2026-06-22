@@ -5,6 +5,7 @@ var obsidian = require('obsidian');
 class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     settings = null;
     secureSettings = null;
+    todoCollectionUrl = null;
 
     async onload() {
         console.log('Yandex Calendar plugin is starting...');
@@ -24,6 +25,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     registerCommands() {
+        // Основная команда
         this.addCommand({
             id: 'insert-event-from-yandex-calendar-at-cursor',
             name: 'Вставить событие из Яндекс Календаря в позицию курсора',
@@ -31,6 +33,147 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 this.insertEvent(editor);
             }
         });
+
+        // Тестовая команда
+        this.addCommand({
+            id: 'test-find-todo-collection',
+            name: 'Тест: найти коллекцию задач',
+            callback: () => {
+                this.testFindTodo();
+            }
+        });
+    }
+
+    async testFindTodo() {
+        new Notice('🔍 Ищем коллекцию задач...');
+        const todoUrl = await this.findTodoCollection();
+        if (todoUrl) {
+            new Notice(`✅ Коллекция найдена: ${todoUrl}`);
+            const tasks = await this.getTasksFromCollection(todoUrl);
+            if (tasks) {
+                new Notice('✅ Задачи получены. Смотрите консоль (F12)');
+            } else {
+                new Notice('❌ Не удалось получить задачи');
+            }
+        } else {
+            new Notice('❌ Коллекция не найдена');
+        }
+    }
+
+    async findTodoCollection() {
+        try {
+            const email = this.settings.email;
+            const password = await this.getStoredPassword();
+
+            if (!email || !password) {
+                return null;
+            }
+
+            const token = btoa(`${email}:${password}`);
+            const baseUrl = `https://caldav.yandex.ru/calendars/${email}/`;
+            
+            const xmlPropFind = `<?xml version="1.0" encoding="utf-8" ?>
+<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+    <d:prop>
+        <d:resourcetype/>
+        <d:displayname/>
+    </d:prop>
+</d:propfind>`;
+
+            const response = await requestUrl({
+                url: baseUrl,
+                method: 'PROPFIND',
+                headers: {
+                    'Authorization': `Basic ${token}`,
+                    'Content-Type': 'application/xml; charset=utf-8',
+                    'Depth': '1'
+                },
+                body: xmlPropFind
+            });
+
+            console.log('=== СПИСОК ВСЕХ КОЛЛЕКЦИЙ ===');
+            console.log(response.text);
+            
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(response.text, 'text/xml');
+            
+            const hrefs = xmlDoc.getElementsByTagNameNS('DAV:', 'href');
+            
+            for (let i = 0; i < hrefs.length; i++) {
+                const href = hrefs[i].textContent;
+                if (href && href.includes('todos-')) {
+                    const todoUrl = href.startsWith('http') 
+                        ? href 
+                        : `https://caldav.yandex.ru${href}`;
+                    console.log(`Найдена коллекция задач: ${todoUrl}`);
+                    this.todoCollectionUrl = todoUrl;
+                    return todoUrl;
+                }
+            }
+            
+            console.log('Коллекция задач не найдена');
+            return null;
+        } catch (error) {
+            console.error('Ошибка поиска коллекции задач:', error);
+            return null;
+        }
+    }
+
+    async getTasksFromCollection(todoUrl) {
+        try {
+            const email = this.settings.email;
+            const password = await this.getStoredPassword();
+
+            if (!email || !password) {
+                return null;
+            }
+
+            const token = btoa(`${email}:${password}`);
+            
+            const xmlQuery = `<?xml version="1.0" encoding="utf-8" ?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+    <d:prop>
+        <c:calendar-data>
+            <c:comp name="VCALENDAR">
+                <c:comp name="VTODO">
+                    <c:prop name="SUMMARY"/>
+                    <c:prop name="DTSTART"/>
+                    <c:prop name="DUE"/>
+                    <c:prop name="DESCRIPTION"/>
+                    <c:prop name="URL"/>
+                    <c:prop name="PRIORITY"/>
+                    <c:prop name="STATUS"/>
+                    <c:prop name="COMPLETED"/>
+                </c:comp>
+            </c:comp>
+        </c:calendar-data>
+    </d:prop>
+    <c:filter>
+        <c:comp-filter name="VCALENDAR">
+            <c:comp-filter name="VTODO"/>
+        </c:comp-filter>
+    </c:filter>
+</c:calendar-query>`;
+
+            const response = await requestUrl({
+                url: todoUrl,
+                method: 'REPORT',
+                headers: {
+                    'Authorization': `Basic ${token}`,
+                    'Content-Type': 'application/xml; charset=utf-8',
+                    'Depth': '1'
+                },
+                body: xmlQuery
+            });
+
+            console.log('=== ЗАДАЧИ ИЗ КОЛЛЕКЦИИ ===');
+            console.log(response.text);
+            
+            return response.text;
+        } catch (error) {
+            console.error('Ошибка получения задач:', error);
+            return null;
+        }
     }
 
     async makeRequest(email, password, baseUrl, uri, body) {
@@ -49,11 +192,9 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 body: body
             });
 
-            new Notice('Яндекс Календарь успешно вернул события');
             return response.text;
         } catch (error) {
             console.error('Запрос к Яндекс Календарю завершился ошибкой: ', error);
-            new Notice('Запрос к Яндекс Календарю завершился ошибкой: ' + error.message);
             throw error;
         }
     }
@@ -63,52 +204,55 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
         const responses = xmlDoc.getElementsByTagNameNS('DAV:', 'response');
         
-        return Array.from(responses).map(response => {
+        const events = [];
+        
+        for (const response of responses) {
             try {
                 const calendarData = response.getElementsByTagNameNS('urn:ietf:params:xml:ns:caldav', 'calendar-data')[0];
-                if (!calendarData) return null;
+                if (!calendarData) continue;
 
                 const icalText = calendarData.textContent;
                 
-                // Парсим VEVENT (события)
+                // Парсим VEVENT
                 const veventMatch = icalText.match(/BEGIN:VEVENT([\s\S]*?)END:VEVENT/);
                 if (veventMatch) {
-                    return this.parseYandexCalendar(veventMatch[1], false);
+                    const event = this.parseYandexCalendar(veventMatch[1], false);
+                    if (event) events.push(event);
                 }
                 
-                // Парсим VTODO (задачи)
+                // Парсим VTODO
                 const vtodoMatch = icalText.match(/BEGIN:VTODO([\s\S]*?)END:VTODO/);
                 if (vtodoMatch) {
-                    return this.parseYandexCalendar(vtodoMatch[1], true);
+                    const event = this.parseYandexCalendar(vtodoMatch[1], true);
+                    if (event) events.push(event);
                 }
-
-                return null;
             } catch (error) {
                 console.error('Error parsing event:', error);
-                return null;
             }
-        }).filter(event => event !== null);
+        }
+        
+        return events;
     }
 
     parseYandexCalendar(data, isTask = false) {
         const lines = String(data).split('\n');
         const eventData = {};
 
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
+        for (const line of lines) {
+            const trimmed = line.trim();
 
-            if (line.startsWith('SUMMARY:')) {
-                eventData.summary = line.substring(8);
-            } else if (line.startsWith('DTSTART;TZID=')) {
-                const dateStr = line.substring(line.indexOf(':') + 1);
+            if (trimmed.startsWith('SUMMARY:')) {
+                eventData.summary = trimmed.substring(8);
+            } else if (trimmed.startsWith('DTSTART;TZID=')) {
+                const dateStr = trimmed.substring(trimmed.indexOf(':') + 1);
                 eventData.dateStart = this.parseYandexCalendarDate(dateStr);
                 eventData.allDay = false;
-            } else if (line.startsWith('DTSTART;VALUE=DATE:')) {
-                const dateStr = line.substring(line.indexOf(':') + 1);
+            } else if (trimmed.startsWith('DTSTART;VALUE=DATE:')) {
+                const dateStr = trimmed.substring(trimmed.indexOf(':') + 1);
                 eventData.dateStart = this.parseAllDayDate(dateStr);
                 eventData.allDay = true;
-            } else if (line.startsWith('DTSTART:')) {
-                const dateStr = line.substring(8);
+            } else if (trimmed.startsWith('DTSTART:')) {
+                const dateStr = trimmed.substring(8);
                 if (dateStr.length === 8) {
                     eventData.dateStart = this.parseAllDayDate(dateStr);
                     eventData.allDay = true;
@@ -116,31 +260,31 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                     eventData.dateStart = this.parseYandexCalendarDate(dateStr);
                     eventData.allDay = false;
                 }
-            } else if (line.startsWith('DTEND;TZID=')) {
-                const dateStr = line.substring(line.indexOf(':') + 1);
+            } else if (trimmed.startsWith('DTEND;TZID=')) {
+                const dateStr = trimmed.substring(trimmed.indexOf(':') + 1);
                 eventData.dateEnd = this.parseYandexCalendarDate(dateStr);
-            } else if (line.startsWith('DTEND;VALUE=DATE:')) {
-                const dateStr = line.substring(line.indexOf(':') + 1);
+            } else if (trimmed.startsWith('DTEND;VALUE=DATE:')) {
+                const dateStr = trimmed.substring(trimmed.indexOf(':') + 1);
                 eventData.dateEnd = this.parseAllDayDate(dateStr);
-            } else if (line.startsWith('DTEND:')) {
-                const dateStr = line.substring(6);
+            } else if (trimmed.startsWith('DTEND:')) {
+                const dateStr = trimmed.substring(6);
                 if (dateStr.length === 8) {
                     eventData.dateEnd = this.parseAllDayDate(dateStr);
                 } else {
                     eventData.dateEnd = this.parseYandexCalendarDate(dateStr);
                 }
-            } else if (line.startsWith('DESCRIPTION:')) {
-                eventData.description = line.substring(12);
-            } else if (line.startsWith('URL:')) {
-                eventData.url = line.substring(4);
-            } else if (line.startsWith('DUE:')) {
-                const dateStr = line.substring(4);
+            } else if (trimmed.startsWith('DESCRIPTION:')) {
+                eventData.description = trimmed.substring(12);
+            } else if (trimmed.startsWith('URL:')) {
+                eventData.url = trimmed.substring(4);
+            } else if (trimmed.startsWith('DUE:')) {
+                const dateStr = trimmed.substring(4);
                 if (dateStr.length === 8) {
                     eventData.dueDate = this.parseAllDayDate(dateStr);
                 } else {
                     eventData.dueDate = this.parseYandexCalendarDate(dateStr);
                 }
-                // Используем DUE как дату начала, если нет DTSTART
+                // Если нет DTSTART, используем DUE
                 if (!eventData.dateStart) {
                     eventData.dateStart = eventData.dueDate;
                     eventData.allDay = true;
@@ -150,6 +294,11 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
 
         // Если это задача без даты - пропускаем
         if (isTask && !eventData.dateStart) {
+            console.log('Задача без даты пропущена:', eventData.summary);
+            return null;
+        }
+
+        if (!eventData.dateStart) {
             return null;
         }
 
@@ -258,7 +407,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
 
             if (!email || !password) {
                 new Notice('Email or password not configured');
-                throw new Error('Email or password not configured');
+                return [];
             }
 
             const baseUrl = 'https://caldav.yandex.ru';
@@ -271,13 +420,22 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
 
             const { start, end } = this.getDateRange(currentDate);
             
-            // Запрос на получение событий и задач
+            // 1. Получаем события из /events/
             const body = this.buildCalendarQuery(start, end);
-
-            const data = await this.makeRequest(email, password, baseUrl, uri, body);
-            const events = this.parseCalendarEvents(data);
+            let data = await this.makeRequest(email, password, baseUrl, uri, body);
+            let events = this.parseCalendarEvents(data);
             
-            // Фильтруем: показываем только события/задачи на текущую дату
+            // 2. Получаем задачи из /todos-/
+            const todoUrl = await this.findTodoCollection();
+            if (todoUrl) {
+                const tasksXml = await this.getTasksFromCollection(todoUrl);
+                if (tasksXml) {
+                    const taskEvents = this.parseCalendarEvents(tasksXml);
+                    events = events.concat(taskEvents);
+                }
+            }
+            
+            // Фильтруем: показываем только на текущую дату
             const filteredEvents = events.filter(event => {
                 if (!event || !event.dateStart) return false;
                 const eventDate = new Date(event.dateStart);
@@ -287,7 +445,8 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                        eventDate.getDate() === today.getDate();
             });
             
-            console.log('Parsed events: ', filteredEvents);
+            console.log('Всего событий и задач:', filteredEvents.length);
+            console.log(filteredEvents);
             return filteredEvents;
         } catch (error) {
             console.error('Failed to get events:', error);
@@ -309,13 +468,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                     <C:prop name="DESCRIPTION"/>
                     <C:prop name="URL"/>
                 </C:comp>
-                <C:comp name="VTODO">
-                    <C:prop name="SUMMARY"/>
-                    <C:prop name="DTSTART"/>
-                    <C:prop name="DUE"/>
-                    <C:prop name="DESCRIPTION"/>
-                    <C:prop name="URL"/>
-                </C:comp>
                 <C:comp name="VTIMEZONE"/>
             </C:comp>
         </C:calendar-data>
@@ -323,9 +475,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     <C:filter>
         <C:comp-filter name="VCALENDAR">
             <C:comp-filter name="VEVENT">
-                <C:time-range start="${start}" end="${end}"/>
-            </C:comp-filter>
-            <C:comp-filter name="VTODO">
                 <C:time-range start="${start}" end="${end}"/>
             </C:comp-filter>
         </C:comp-filter>
