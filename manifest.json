@@ -1,11 +1,10 @@
 {
-	"id": "yandex-calendar-integration-fixed",
-	"name": "Yandex Calendar Integration (Fixed)",
-	"version": "0.2.0",
-	"minAppVersion": "1.8.0",
-	"description": "Plugin for integrating daily notes with Yandex Calendar.",
-	"author": "Lex-is-BIM",
-	"authorUrl": "https://github.com/Lex-is-BIM",
-	"helpUrl": "",
-	"isDesktopOnly": false
+  "id": "yandex-calendar-integration",
+  "name": "Yandex Calendar Integration",
+  "version": "0.3.0",
+  "minAppVersion": "1.8.0",
+  "description": "Плагин для интеграции Obsidian с Яндекс Календарем",
+  "author": "epov_ag",
+  "authorUrl": "https://github.com/epov_ag",
+  "isDesktopOnly": false
 }
