@@ -70,19 +70,9 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
 
                 const icalText = calendarData.textContent;
                 
-                // Парсим VEVENT
+                // Парсим только VEVENT (события)
                 const veventMatch = icalText.match(/BEGIN:VEVENT([\s\S]*?)END:VEVENT/);
-                if (veventMatch) {
-                    return this.parseYandexCalendar(veventMatch[1], false);
-                }
-                
-                // Парсим VTODO
-                const vtodoMatch = icalText.match(/BEGIN:VTODO([\s\S]*?)END:VTODO/);
-                if (vtodoMatch) {
-                    return this.parseYandexCalendar(vtodoMatch[1], true);
-                }
-
-                return null;
+                return veventMatch ? this.parseYandexCalendar(veventMatch[1], false) : null;
             } catch (error) {
                 console.error('Error parsing event:', error);
                 return null;
@@ -111,9 +101,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 eventData.allDay = true;
             } else if (line.startsWith('DTSTART:')) {
                 const dateStr = line.substring(8);
-                // Проверяем, содержит ли строка время или это только дата
                 if (dateStr.length === 8) {
-                    // Только дата (YYYYMMDD) - all-day событие
                     const parsed = this.parseAllDayDate(dateStr);
                     eventData.dateStart = parsed;
                     eventData.allDay = true;
@@ -139,22 +127,9 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 eventData.description = line.substring(12);
             } else if (line.startsWith('URL:')) {
                 eventData.url = line.substring(4);
-            } else if (line.startsWith('DUE:')) {
-                // Для задач (VTODO) - дедлайн
-                const dateStr = line.substring(4);
-                if (dateStr.length === 8) {
-                    eventData.dueDate = this.parseAllDayDate(dateStr);
-                } else {
-                    eventData.dueDate = this.parseYandexCalendarDate(dateStr);
-                }
-            } else if (line.startsWith('PRIORITY:')) {
-                eventData.priority = parseInt(line.substring(9));
-            } else if (line.startsWith('STATUS:')) {
-                eventData.status = line.substring(7);
             }
         }
 
-        // Для all-day событий время не показываем
         const timeStart = eventData.allDay ? '' : this.getTimeOnly(eventData.dateStart);
         const timeEnd = eventData.allDay ? '' : this.getTimeOnly(eventData.dateEnd);
 
@@ -165,22 +140,14 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             timeStart,
             timeEnd,
             eventData.description,
-            eventData.url,
-            isTask,
-            eventData.allDay || false,
-            eventData.dueDate,
-            eventData.priority,
-            eventData.status
+            eventData.url
         );
     }
 
     parseAllDayDate(dateStr) {
-        // Формат: YYYYMMDD
         const year = parseInt(dateStr.substring(0, 4));
         const month = parseInt(dateStr.substring(4, 6)) - 1;
         const day = parseInt(dateStr.substring(6, 8));
-        
-        // Создаем дату в UTC, чтобы избежать проблем с часовым поясом
         return new Date(Date.UTC(year, month, day));
     }
 
@@ -188,9 +155,8 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         if (!dateString) return '';
         
         const date = new Date(dateString);
-        // Проверяем, является ли дата all-day (время 00:00:00 UTC)
         if (date.getUTCHours() === 0 && date.getUTCMinutes() === 0 && date.getUTCSeconds() === 0) {
-            return ''; // Для all-day событий время не показываем
+            return '';
         }
         
         return date.toLocaleTimeString('ru-RU', {
@@ -219,11 +185,10 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         );
     }
 
-    //Для настроек плагина
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData())
     }
-    //Для настроек плагина
+
     async saveSettings() {
         await this.saveData(this.settings)
     }
@@ -237,13 +202,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             const events = await this.getEvents();
             const pattern = this.settings.pattern;
 
-            // Сортируем все события и задачи вместе
-            const sortedEvents = events.sort((a, b) => {
-                const dateA = a.dateStart || a.dueDate || new Date(0);
-                const dateB = b.dateStart || b.dueDate || new Date(0);
-                return dateA.getTime() - dateB.getTime();
-            });
-            
+            const sortedEvents = events.sort((a, b) => a.dateStart.getTime() - b.dateStart.getTime());
             const formattedEvents = await this.formatEventsByPattern(sortedEvents, pattern);
            
             const cursor = editor.getCursor();
@@ -300,7 +259,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     buildCalendarQuery(start, end) {
-    return `<?xml version="1.0" encoding="utf-8" ?>
+        return `<?xml version="1.0" encoding="utf-8" ?>
 <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
     <D:prop>
         <D:getetag/>
@@ -312,10 +271,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                     <C:prop name="DTEND"/>
                     <C:prop name="DESCRIPTION"/>
                     <C:prop name="URL"/>
-                    <C:prop name="UID"/>                       <!-- Добавили -->
-                    <C:prop name="CREATED"/>                  <!-- Добавили -->
-                    <C:prop name="LAST-MODIFIED"/>            <!-- Добавили -->
-                    <!-- Запрашиваем все свойства, чтобы увидеть, что приходит -->
                 </C:comp>
                 <C:comp name="VTIMEZONE"/>
             </C:comp>
@@ -329,7 +284,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         </C:comp-filter>
     </C:filter>
 </C:calendar-query>`;
-}
+    }
 
     getCurrentDailyNoteDate() {
         const activeFile = this.app.workspace.getActiveFile();
@@ -346,9 +301,11 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         }
 
         const dateFormat = dailyNotes.getFormat();
+        const fileName = activeFile.basename;
         
-        if (this.isDailyNote(dateFormat, activeFile.basename)) {
-            const noteDate = this.parseDateFromString(dateFormat, activeFile.basename);
+        // Проверяем, начинается ли имя файла с даты
+        if (this.isDailyNote(dateFormat, fileName)) {
+            const noteDate = this.parseDateFromString(dateFormat, fileName);
             new Notice(`Дата заметки: ${noteDate.toLocaleDateString('ru-RU')}`);
             return noteDate;
         } else {
@@ -359,7 +316,8 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
 
     isDailyNote(template, str) {
         const regexPattern = this.createDateRegexPattern(template);
-        return new RegExp(`^${regexPattern}$`).test(str);
+        // Проверяем, что строка НАЧИНАЕТСЯ с даты
+        return new RegExp(`^${regexPattern}`).test(str);
     }
 
     createDateRegexPattern(template) {
@@ -372,55 +330,47 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     parseDateFromString(template, str) {
-        // Создаем regex паттерн с группами захвата
         const { regexPattern, componentOrder } = this.createRegexWithCaptureGroups(template);
-        const regex = new RegExp(`^${regexPattern}$`);
+        const regex = new RegExp(`^${regexPattern}`);
         const match = str.match(regex);
 
         if (!match) {
             throw new Error('Не удалось извлечь дату');
         }
 
-        // Извлекаем компоненты даты
         const components = {};
         for (let i = 0; i < componentOrder.length; i++) {
             components[componentOrder[i]] = parseInt(match[i + 1], 10);
         }
 
-        // Собираем полную дату
         let year, month, day;
 
-        // Обрабатываем год
         if (components.YYYY) {
             year = components.YYYY;
         } else if (components.YY) {
-            year = 2000 + components.YY; // Преобразуем YY в YYYY
+            year = 2000 + components.YY;
         } else {
             throw new Error('Не найден год в шаблоне');
         }
 
-        // Обрабатываем месяц
         if (components.MM) {
-            month = components.MM - 1; // Месяцы в JS: 0-11
+            month = components.MM - 1;
         } else {
             throw new Error('Не найден месяц в шаблоне');
         }
 
-        // Обрабатываем день
         if (components.DD) {
             day = components.DD;
         } else {
             throw new Error('Не найден день в шаблоне');
         }
 
-        // Создаем и проверяем дату
         const date = new Date(year, month, day);
 
         if (isNaN(date.getTime())) {
             throw new Error('Некорректная дата');
         }
 
-        // Проверяем, что компоненты соответствуют (на случай 31 февраля и т.д.)
         if (date.getFullYear() !== year ||
             date.getMonth() !== month ||
             date.getDate() !== day) {
@@ -434,9 +384,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         const componentOrder = [];
 
         const regexPattern = template
-            // Экранируем специальные символы для regex
             .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-            // Заменяем компоненты даты на соответствующие regex группы захвата
             .replace(/YYYY/g, () => {
                 componentOrder.push('YYYY');
                 return '(\\d{4})';
@@ -457,7 +405,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         return { regexPattern, componentOrder };
     }
 
-
     getDailyNotesInstance() {
         if (this.app.internalPlugins) {
             const plugin = this.app.internalPlugins.getPluginById('daily-notes');
@@ -467,7 +414,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     getDateRange(currentDate) {
-        // Создаем даты начала и конца в локальном часовом поясе
         const start = new Date(
             currentDate.getFullYear(),
             currentDate.getMonth(),
@@ -482,7 +428,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             0, 0, 0, 0
         );
 
-        // Форматируем в нужный строковый формат
         const formatDate = (date) => {
             const year = date.getUTCFullYear();
             const month = String(date.getUTCMonth() + 1).padStart(2, '0');
@@ -524,13 +469,8 @@ class CalendarEventDto {
     timeEnd = '';
     description = '';
     url = '';
-    isTask = false;
-    allDay = false;
-    dueDate = null;
-    priority = null;
-    status = '';
 
-    constructor(summary, dateStart, dateEnd, timeStart, timeEnd, description, url, isTask = false, allDay = false, dueDate = null, priority = null, status = '') {
+    constructor(summary, dateStart, dateEnd, timeStart, timeEnd, description, url) {
         this.summary = summary;
         this.dateStart = dateStart;
         this.dateEnd = dateEnd;
@@ -538,15 +478,9 @@ class CalendarEventDto {
         this.timeEnd = timeEnd;
         this.description = description;
         this.url = url;
-        this.isTask = isTask;
-        this.allDay = allDay;
-        this.dueDate = dueDate;
-        this.priority = priority;
-        this.status = status;
     }
 
     formatByPatternEvent(pattern) {
-        // Добавляем дополнительные переменные для шаблона
         const vars = {
             summary: this.summary || '',
             dateStart: this.dateStart ? this.dateStart.toLocaleDateString('ru-RU') : '',
@@ -554,12 +488,7 @@ class CalendarEventDto {
             timeStart: this.timeStart || '',
             timeEnd: this.timeEnd || '',
             description: this.description || '',
-            url: this.url || '',
-            isTask: this.isTask ? 'Задача' : 'Событие',
-            allDay: this.allDay ? 'Весь день' : '',
-            dueDate: this.dueDate ? this.dueDate.toLocaleDateString('ru-RU') : '',
-            priority: this.priority || '',
-            status: this.status || ''
+            url: this.url || ''
         };
 
         return pattern.replace(/\${(.*?)}/g, (match, key) => {
@@ -609,7 +538,6 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
 
         let password = '';
 
-        // Сохранение пароля
         new obsidian.Setting(containerEl)
             .setName('Password')
             .setDesc(linkContainer)
@@ -669,7 +597,6 @@ class SecureSettings {
 
     async savePassword(password) {
         try {
-            // Используем встроенный API Obsidian для безопасного хранения
             if (this.plugin.app.saveLocalStorage) {
                 await this.plugin.app.saveLocalStorage(this.serviceId, password);
                 return true;
@@ -692,7 +619,6 @@ class SecureSettings {
     }
 
     async hasStoredPassword() {
-        // Проверяем через асинхронный метод
         return this.getPassword().then(pwd => pwd !== null);
     }
 
