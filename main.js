@@ -5,7 +5,6 @@ var obsidian = require('obsidian');
 class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     settings = null;
     secureSettings = null;
-    todoCollectionUrl = null;
 
     async onload() {
         console.log('Yandex Calendar plugin is starting...');
@@ -25,7 +24,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     registerCommands() {
-        // Основная команда
         this.addCommand({
             id: 'insert-event-from-yandex-calendar-at-cursor',
             name: 'Вставить событие из Яндекс Календаря в позицию курсора',
@@ -34,39 +32,43 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             }
         });
 
-        // Тестовая команда
         this.addCommand({
             id: 'test-find-todo-collection',
-            name: 'Тест: найти коллекцию задач',
+            name: 'Тест: найти все коллекции',
             callback: () => {
-                this.testFindTodo();
+                this.testFindCollections();
             }
         });
     }
 
-    async testFindTodo() {
-        new Notice('🔍 Ищем коллекцию задач...');
-        const todoUrl = await this.findTodoCollection();
-        if (todoUrl) {
-            new Notice(`✅ Коллекция найдена: ${todoUrl}`);
-            const tasks = await this.getTasksFromCollection(todoUrl);
-            if (tasks) {
-                new Notice('✅ Задачи получены. Смотрите консоль (F12)');
-            } else {
-                new Notice('❌ Не удалось получить задачи');
+    async testFindCollections() {
+        new Notice('🔍 Ищем все коллекции...');
+        const collections = await this.findCollections();
+        if (collections.length > 0) {
+            new Notice(`✅ Найдено коллекций: ${collections.length}`);
+            console.log('Все коллекции:', collections);
+            for (const url of collections) {
+                try {
+                    const data = await this.requestCollection(url);
+                    if (data) {
+                        console.log(`✅ Данные из ${url} получены`);
+                    }
+                } catch (e) {
+                    console.error(`Ошибка при запросе ${url}:`, e);
+                }
             }
         } else {
-            new Notice('❌ Коллекция не найдена');
+            new Notice('❌ Коллекции не найдены');
         }
     }
 
-    async findTodoCollection() {
+    async findCollections() {
         try {
             const email = this.settings.email;
             const password = await this.getStoredPassword();
 
             if (!email || !password) {
-                return null;
+                return [];
             }
 
             const token = btoa(`${email}:${password}`);
@@ -98,28 +100,35 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             const xmlDoc = parser.parseFromString(response.text, 'text/xml');
             
             const hrefs = xmlDoc.getElementsByTagNameNS('DAV:', 'href');
+            const collections = [];
             
             for (let i = 0; i < hrefs.length; i++) {
                 const href = hrefs[i].textContent;
-                if (href && href.includes('todos-')) {
-                    const todoUrl = href.startsWith('http') 
+                if (href && (href.includes('todos-') || href.includes('events-'))) {
+                    const url = href.startsWith('http') 
                         ? href 
                         : `https://caldav.yandex.ru${href}`;
-                    console.log(`Найдена коллекция задач: ${todoUrl}`);
-                    this.todoCollectionUrl = todoUrl;
-                    return todoUrl;
+                    collections.push(url);
+                    console.log(`Найдена коллекция: ${url}`);
                 }
             }
             
-            console.log('Коллекция задач не найдена');
-            return null;
+            // Добавляем events-default если его нет
+            const defaultEvents = `https://caldav.yandex.ru/calendars/${email}/events-default/`;
+            if (!collections.includes(defaultEvents)) {
+                collections.push(defaultEvents);
+                console.log(`Добавлена коллекция по умолчанию: ${defaultEvents}`);
+            }
+            
+            console.log(`Всего найдено коллекций: ${collections.length}`);
+            return collections;
         } catch (error) {
-            console.error('Ошибка поиска коллекции задач:', error);
-            return null;
+            console.error('Ошибка поиска коллекций:', error);
+            return [];
         }
     }
 
-    async getTasksFromCollection(todoUrl) {
+    async requestCollection(collectionUrl) {
         try {
             const email = this.settings.email;
             const password = await this.getStoredPassword();
@@ -130,7 +139,45 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
 
             const token = btoa(`${email}:${password}`);
             
-            const xmlQuery = `<?xml version="1.0" encoding="utf-8" ?>
+            // Определяем тип запроса
+            let body;
+            if (collectionUrl.includes('todos-')) {
+                body = this.buildTodoQuery();
+            } else {
+                // Для событий используем сегодняшнюю дату
+                const currentDate = this.getCurrentDailyNoteDate();
+                if (!currentDate) return null;
+                const { start, end } = this.getDateRange(currentDate);
+                body = this.buildCalendarQuery(start, end);
+            }
+            
+            // Извлекаем путь из URL
+            const urlObj = new URL(collectionUrl);
+            const path = urlObj.pathname;
+
+            const response = await requestUrl({
+                url: `https://caldav.yandex.ru${path}`,
+                method: 'REPORT',
+                headers: {
+                    'Authorization': `Basic ${token}`,
+                    'Content-Type': 'application/xml',
+                    'Depth': '1'
+                },
+                body: body
+            });
+
+            console.log(`=== ДАННЫЕ ИЗ ${collectionUrl} ===`);
+            console.log(response.text);
+            
+            return response.text;
+        } catch (error) {
+            console.error(`Ошибка запроса к ${collectionUrl}:`, error);
+            return null;
+        }
+    }
+
+    buildTodoQuery() {
+        return `<?xml version="1.0" encoding="utf-8" ?>
 <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
     <d:prop>
         <c:calendar-data>
@@ -141,9 +188,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                     <c:prop name="DUE"/>
                     <c:prop name="DESCRIPTION"/>
                     <c:prop name="URL"/>
-                    <c:prop name="PRIORITY"/>
-                    <c:prop name="STATUS"/>
-                    <c:prop name="COMPLETED"/>
                 </c:comp>
             </c:comp>
         </c:calendar-data>
@@ -154,49 +198,34 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         </c:comp-filter>
     </c:filter>
 </c:calendar-query>`;
-
-            const response = await requestUrl({
-                url: todoUrl,
-                method: 'REPORT',
-                headers: {
-                    'Authorization': `Basic ${token}`,
-                    'Content-Type': 'application/xml; charset=utf-8',
-                    'Depth': '1'
-                },
-                body: xmlQuery
-            });
-
-            console.log('=== ЗАДАЧИ ИЗ КОЛЛЕКЦИИ ===');
-            console.log(response.text);
-            
-            return response.text;
-        } catch (error) {
-            console.error('Ошибка получения задач:', error);
-            return null;
-        }
     }
 
-    async makeRequest(email, password, baseUrl, uri, body) {
-        try {
-            const token = btoa(`${email}:${password}`);
-            const url = baseUrl + uri;
-
-            const response = await requestUrl({
-                url: url,
-                method: 'REPORT',
-                headers: {
-                    'Authorization': `Basic ${token}`,
-                    'Content-Type': 'application/xml',
-                    'Depth': '1'
-                },
-                body: body
-            });
-
-            return response.text;
-        } catch (error) {
-            console.error('Запрос к Яндекс Календарю завершился ошибкой: ', error);
-            throw error;
-        }
+    buildCalendarQuery(start, end) {
+        return `<?xml version="1.0" encoding="utf-8" ?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+    <D:prop>
+        <D:getetag/>
+        <C:calendar-data>
+            <C:comp name="VCALENDAR">
+                <C:comp name="VEVENT">
+                    <C:prop name="SUMMARY"/>
+                    <C:prop name="DTSTART"/>
+                    <C:prop name="DTEND"/>
+                    <C:prop name="DESCRIPTION"/>
+                    <C:prop name="URL"/>
+                </C:comp>
+                <C:comp name="VTIMEZONE"/>
+            </C:comp>
+        </C:calendar-data>
+    </D:prop>
+    <C:filter>
+        <C:comp-filter name="VCALENDAR">
+            <C:comp-filter name="VEVENT">
+                <C:time-range start="${start}" end="${end}"/>
+            </C:comp-filter>
+        </C:comp-filter>
+    </C:filter>
+</C:calendar-query>`;
     }
 
     parseCalendarEvents(xmlText) {
@@ -284,7 +313,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 } else {
                     eventData.dueDate = this.parseYandexCalendarDate(dateStr);
                 }
-                // Если нет DTSTART, используем DUE
                 if (!eventData.dateStart) {
                     eventData.dateStart = eventData.dueDate;
                     eventData.allDay = true;
@@ -411,44 +439,38 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 return [];
             }
 
-            const baseUrl = 'https://caldav.yandex.ru';
-            const uri = `/calendars/${email}/events-default`;
             const currentDate = this.getCurrentDailyNoteDate();
 
             if (!currentDate) {
                 return [];
             }
 
-            const { start, end } = this.getDateRange(currentDate);
-            
             console.log('=== ПОЛУЧАЕМ СОБЫТИЯ НА СЕГОДНЯ ===');
             console.log('Дата:', currentDate);
-            console.log('start:', start, 'end:', end);
             
-            // 1. Получаем события из /events-default/
-            const body = this.buildCalendarQuery(start, end);
-            let data = await this.makeRequest(email, password, baseUrl, uri, body);
-            let events = this.parseCalendarEvents(data);
-            console.log('Событий из events-default:', events.length);
+            let allEvents = [];
             
-            // 2. Получаем задачи из /todos-/
-            const todoUrl = await this.findTodoCollection();
-            if (todoUrl) {
-                const tasksXml = await this.getTasksFromCollection(todoUrl);
-                if (tasksXml) {
-                    const taskEvents = this.parseCalendarEvents(tasksXml);
-                    console.log('Задач из todos-:', taskEvents.length);
-                    // Добавляем все задачи с датой
-                    const tasksWithDate = taskEvents.filter(task => task && task.dateStart);
-                    console.log('Задач с датой:', tasksWithDate.length);
-                    events = events.concat(tasksWithDate);
+            // 1. Находим ВСЕ коллекции
+            const collections = await this.findCollections();
+            console.log('Найдено коллекций:', collections.length);
+            
+            // 2. Опрашиваем каждую коллекцию
+            for (const collectionUrl of collections) {
+                console.log(`=== Опрашиваем коллекцию: ${collectionUrl} ===`);
+                const data = await this.requestCollection(collectionUrl);
+                if (data) {
+                    const parsedEvents = this.parseCalendarEvents(data);
+                    console.log(`Из коллекции получено элементов: ${parsedEvents.length}`);
+                    const withDate = parsedEvents.filter(e => e && e.dateStart);
+                    console.log(`Из них с датой: ${withDate.length}`);
+                    allEvents = allEvents.concat(withDate);
                 }
             }
             
-            console.log('Всего элементов до фильтрации:', events.length);
+            console.log('Всего элементов до фильтрации по дате:', allEvents.length);
             
-            // Фильтруем: показываем только на текущую дату
-            const filteredEvents = events.filter(event => {
+            // 3. Фильтруем по дате (только на сегодня)
+            const filteredEvents = allEvents.filter(event => {
                 if (!event || !event.dateStart) return false;
                 const eventDate = new Date(event.dateStart);
                 const today = new Date(currentDate);
@@ -468,34 +490,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             console.error('Failed to get events:', error);
             return [];
         }
-    }
-
-    buildCalendarQuery(start, end) {
-        return `<?xml version="1.0" encoding="utf-8" ?>
-<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
-    <D:prop>
-        <D:getetag/>
-        <C:calendar-data>
-            <C:comp name="VCALENDAR">
-                <C:comp name="VEVENT">
-                    <C:prop name="SUMMARY"/>
-                    <C:prop name="DTSTART"/>
-                    <C:prop name="DTEND"/>
-                    <C:prop name="DESCRIPTION"/>
-                    <C:prop name="URL"/>
-                </C:comp>
-                <C:comp name="VTIMEZONE"/>
-            </C:comp>
-        </C:calendar-data>
-    </D:prop>
-    <C:filter>
-        <C:comp-filter name="VCALENDAR">
-            <C:comp-filter name="VEVENT">
-                <C:time-range start="${start}" end="${end}"/>
-            </C:comp-filter>
-        </C:comp-filter>
-    </C:filter>
-</C:calendar-query>`;
     }
 
     getCurrentDailyNoteDate() {
