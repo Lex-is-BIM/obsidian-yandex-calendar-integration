@@ -300,7 +300,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
     }
 
     buildCalendarQuery(start, end) {
-        return `<?xml version="1.0" encoding="utf-8" ?>
+    return `<?xml version="1.0" encoding="utf-8" ?>
 <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
     <D:prop>
         <D:getetag/>
@@ -312,15 +312,10 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                     <C:prop name="DTEND"/>
                     <C:prop name="DESCRIPTION"/>
                     <C:prop name="URL"/>
-                </C:comp>
-                <C:comp name="VTODO">
-                    <C:prop name="SUMMARY"/>
-                    <C:prop name="DTSTART"/>
-                    <C:prop name="DUE"/>
-                    <C:prop name="DESCRIPTION"/>
-                    <C:prop name="URL"/>
-                    <C:prop name="PRIORITY"/>
-                    <C:prop name="STATUS"/>
+                    <C:prop name="UID"/>                       <!-- Добавили -->
+                    <C:prop name="CREATED"/>                  <!-- Добавили -->
+                    <C:prop name="LAST-MODIFIED"/>            <!-- Добавили -->
+                    <!-- Запрашиваем все свойства, чтобы увидеть, что приходит -->
                 </C:comp>
                 <C:comp name="VTIMEZONE"/>
             </C:comp>
@@ -331,13 +326,10 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             <C:comp-filter name="VEVENT">
                 <C:time-range start="${start}" end="${end}"/>
             </C:comp-filter>
-            <C:comp-filter name="VTODO">
-                <C:time-range start="${start}" end="${end}"/>
-            </C:comp-filter>
         </C:comp-filter>
     </C:filter>
 </C:calendar-query>`;
-    }
+}
 
     getCurrentDailyNoteDate() {
         const activeFile = this.app.workspace.getActiveFile();
