@@ -224,6 +224,22 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             : null;
     }
 
+    async testFindTodo() {
+        new Notice('🔍 Ищем коллекцию задач...');
+        const todoUrl = await this.findTodoCollection();
+        if (todoUrl) {
+            new Notice(`✅ Коллекция найдена: ${todoUrl}`);
+            const tasks = await this.getTasksFromCollection(todoUrl);
+            if (tasks) {
+                new Notice('✅ Задачи получены. Смотрите консоль (F12)');
+            } else {
+                new Notice('❌ Не удалось получить задачи');
+            }
+        } else {
+            new Notice('❌ Коллекция не найдена. Создайте задачу в календаре.');
+        }
+    }
+
     async getEvents() {
         try {
             const email = this.settings.email;
@@ -255,32 +271,164 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         }
     }
 
+    async findTodoCollection() {
+        try {
+            const email = this.settings.email;
+            const password = await this.getStoredPassword();
+
+            if (!email || !password) {
+                new Notice('Email or password not configured');
+                return null;
+            }
+
+            const token = btoa(`${email}:${password}`);
+            const baseUrl = `https://caldav.yandex.ru/calendars/${email}/`;
+            
+            const xmlPropFind = `<?xml version="1.0" encoding="utf-8" ?>
+    <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+        <d:prop>
+            <d:resourcetype/>
+            <d:displayname/>
+        </d:prop>
+    </d:propfind>`;
+
+            const response = await requestUrl({
+                url: baseUrl,
+                method: 'PROPFIND',
+                headers: {
+                    'Authorization': `Basic ${token}`,
+                    'Content-Type': 'application/xml; charset=utf-8',
+                    'Depth': '1'
+                },
+                body: xmlPropFind
+            });
+
+            console.log('=== СПИСОК ВСЕХ КОЛЛЕКЦИЙ ===');
+            console.log(response.text);
+            
+            // Парсим ответ, чтобы найти коллекцию задач
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(response.text, 'text/xml');
+            
+            // Ищем все href
+            const hrefs = xmlDoc.getElementsByTagNameNS('DAV:', 'href');
+            const collections = [];
+            
+            for (let i = 0; i < hrefs.length; i++) {
+                const href = hrefs[i].textContent;
+                // Ищем href, который содержит todos или tasks
+                if (href && (href.includes('todos') || href.includes('tasks'))) {
+                    collections.push(href);
+                    console.log(`Найдена коллекция задач: ${href}`);
+                }
+            }
+            
+            if (collections.length > 0) {
+                // Берем первую найденную коллекцию
+                const todoUrl = collections[0].startsWith('http') 
+                    ? collections[0] 
+                    : `https://caldav.yandex.ru${collections[0]}`;
+                console.log(`Используем URL для задач: ${todoUrl}`);
+                new Notice(`Найдена коллекция задач: ${todoUrl}`);
+                return todoUrl;
+            } else {
+                console.log('Коллекция задач не найдена');
+                new Notice('Коллекция задач не найдена. Попробуйте создать задачу в календаре.');
+                return null;
+            }
+        } catch (error) {
+            console.error('Ошибка поиска коллекции задач:', error);
+            new Notice('Ошибка поиска коллекции задач: ' + error.message);
+            return null;
+        }
+    }
+
+
+
+    async getTasksFromCollection(todoUrl) {
+        try {
+            const email = this.settings.email;
+            const password = await this.getStoredPassword();
+
+            if (!email || !password) {
+                return [];
+            }
+
+            const token = btoa(`${email}:${password}`);
+            
+            // Запрос на получение всех задач из коллекции
+            const xmlQuery = `<?xml version="1.0" encoding="utf-8" ?>
+    <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+        <d:prop>
+            <c:calendar-data>
+                <c:comp name="VCALENDAR">
+                    <c:comp name="VTODO">
+                        <c:prop name="SUMMARY"/>
+                        <c:prop name="DTSTART"/>
+                        <c:prop name="DUE"/>
+                        <c:prop name="DESCRIPTION"/>
+                        <c:prop name="URL"/>
+                        <c:prop name="PRIORITY"/>
+                        <c:prop name="STATUS"/>
+                        <c:prop name="COMPLETED"/>
+                    </c:comp>
+                </c:comp>
+            </c:calendar-data>
+        </d:prop>
+        <c:filter>
+            <c:comp-filter name="VCALENDAR">
+                <c:comp-filter name="VTODO"/>
+            </c:comp-filter>
+        </c:filter>
+    </c:calendar-query>`;
+
+            const response = await requestUrl({
+                url: todoUrl,
+                method: 'REPORT',
+                headers: {
+                    'Authorization': `Basic ${token}`,
+                    'Content-Type': 'application/xml; charset=utf-8',
+                    'Depth': '1'
+                },
+                body: xmlQuery
+            });
+
+            console.log('=== ЗАДАЧИ ИЗ КОЛЛЕКЦИИ ===');
+            console.log(response.text);
+            
+            return response.text;
+        } catch (error) {
+            console.error('Ошибка получения задач:', error);
+            return null;
+        }
+    }
+
     buildCalendarQuery(start, end) {
         return `<?xml version="1.0" encoding="utf-8" ?>
-<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
-    <D:prop>
-        <D:getetag/>
-        <C:calendar-data>
-            <C:comp name="VCALENDAR">
-                <C:comp name="VEVENT">
-                    <C:prop name="SUMMARY"/>
-                    <C:prop name="DTSTART"/>
-                    <C:prop name="DTEND"/>
-                    <C:prop name="DESCRIPTION"/>
-                    <C:prop name="URL"/>
-                </C:comp>
-                <C:comp name="VTIMEZONE"/>
-            </C:comp>
-        </C:calendar-data>
-    </D:prop>
-    <C:filter>
-        <C:comp-filter name="VCALENDAR">
-            <C:comp-filter name="VEVENT">
-                <C:time-range start="${start}" end="${end}"/>
-            </C:comp-filter>
-        </C:comp-filter>
-    </C:filter>
-</C:calendar-query>`;
+        <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+            <D:prop>
+                <D:getetag/>
+                <C:calendar-data>
+                    <C:comp name="VCALENDAR">
+                        <C:comp name="VEVENT">
+                            <C:prop name="SUMMARY"/>
+                            <C:prop name="DTSTART"/>
+                            <C:prop name="DTEND"/>
+                            <C:prop name="DESCRIPTION"/>
+                            <C:prop name="URL"/>
+                        </C:comp>
+                        <C:comp name="VTIMEZONE"/>
+                    </C:comp>
+                </C:calendar-data>
+            </D:prop>
+            <C:filter>
+                <C:comp-filter name="VCALENDAR">
+                    <C:comp-filter name="VEVENT">
+                        <C:time-range start="${start}" end="${end}"/>
+                    </C:comp-filter>
+                </C:comp-filter>
+            </C:filter>
+        </C:calendar-query>`;
     }
 
     getCurrentDailyNoteDate() {
