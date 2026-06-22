@@ -481,20 +481,33 @@ class CalendarEventDto {
     }
 
     formatByPatternEvent(pattern) {
-        const vars = {
-            summary: this.summary || '',
-            dateStart: this.dateStart ? this.dateStart.toLocaleDateString('ru-RU') : '',
-            dateEnd: this.dateEnd ? this.dateEnd.toLocaleDateString('ru-RU') : '',
-            timeStart: this.timeStart || '',
-            timeEnd: this.timeEnd || '',
-            description: this.description || '',
-            url: this.url || ''
-        };
-
-        return pattern.replace(/\${(.*?)}/g, (match, key) => {
-            return vars.hasOwnProperty(key) && vars[key] !== undefined && vars[key] !== null ? vars[key] : '';
-        });
+    // Формируем отображение времени
+    let timeDisplay = '';
+    if (this.allDay) {
+        timeDisplay = 'Весь день';
+    } else if (this.timeStart && this.timeEnd) {
+        timeDisplay = `${this.timeStart} - ${this.timeEnd}`;
+    } else if (this.timeStart) {
+        timeDisplay = this.timeStart;
+    } else {
+        timeDisplay = '';
     }
+
+    const vars = {
+        summary: this.summary || '',
+        dateStart: this.dateStart ? this.dateStart.toLocaleDateString('ru-RU') : '',
+        dateEnd: this.dateEnd ? this.dateEnd.toLocaleDateString('ru-RU') : '',
+        timeStart: this.timeStart || '',
+        timeEnd: this.timeEnd || '',
+        timeDisplay: timeDisplay,  // ← новое поле
+        description: this.description || '',
+        url: this.url || ''
+    };
+
+    return pattern.replace(/\${(.*?)}/g, (match, key) => {
+        return vars.hasOwnProperty(key) && vars[key] !== undefined && vars[key] !== null ? vars[key] : '';
+    });
+}
 }
 
 class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
