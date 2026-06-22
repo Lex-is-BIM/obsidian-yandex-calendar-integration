@@ -313,7 +313,8 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             timeEnd,
             eventData.description || '',
             eventData.url || '',
-            eventData.allDay || false
+            eventData.allDay || false,
+            isTask
         );
     }
 
@@ -420,10 +421,15 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
 
             const { start, end } = this.getDateRange(currentDate);
             
-            // 1. Получаем события из /events/
+            console.log('=== ПОЛУЧАЕМ СОБЫТИЯ НА СЕГОДНЯ ===');
+            console.log('Дата:', currentDate);
+            console.log('start:', start, 'end:', end);
+            
+            // 1. Получаем события из /events-default/
             const body = this.buildCalendarQuery(start, end);
             let data = await this.makeRequest(email, password, baseUrl, uri, body);
             let events = this.parseCalendarEvents(data);
+            console.log('Событий из events-default:', events.length);
             
             // 2. Получаем задачи из /todos-/
             const todoUrl = await this.findTodoCollection();
@@ -431,22 +437,32 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 const tasksXml = await this.getTasksFromCollection(todoUrl);
                 if (tasksXml) {
                     const taskEvents = this.parseCalendarEvents(tasksXml);
-                    events = events.concat(taskEvents);
+                    console.log('Задач из todos-:', taskEvents.length);
+                    // Добавляем все задачи с датой
+                    const tasksWithDate = taskEvents.filter(task => task && task.dateStart);
+                    console.log('Задач с датой:', tasksWithDate.length);
+                    events = events.concat(tasksWithDate);
                 }
             }
+            
+            console.log('Всего элементов до фильтрации:', events.length);
             
             // Фильтруем: показываем только на текущую дату
             const filteredEvents = events.filter(event => {
                 if (!event || !event.dateStart) return false;
                 const eventDate = new Date(event.dateStart);
                 const today = new Date(currentDate);
-                return eventDate.getFullYear() === today.getFullYear() &&
+                const isToday = eventDate.getFullYear() === today.getFullYear() &&
                        eventDate.getMonth() === today.getMonth() &&
                        eventDate.getDate() === today.getDate();
+                if (!isToday) {
+                    console.log('Пропущено (не сегодня):', event.summary, eventDate);
+                }
+                return isToday;
             });
             
-            console.log('Всего событий и задач:', filteredEvents.length);
-            console.log(filteredEvents);
+            console.log('Итоговое количество элементов:', filteredEvents.length);
+            console.log('Итоговый список:', filteredEvents);
             return filteredEvents;
         } catch (error) {
             console.error('Failed to get events:', error);
@@ -665,8 +681,9 @@ class CalendarEventDto {
     description = '';
     url = '';
     allDay = false;
+    isTask = false;
 
-    constructor(summary, dateStart, dateEnd, timeStart, timeEnd, description, url, allDay = false) {
+    constructor(summary, dateStart, dateEnd, timeStart, timeEnd, description, url, allDay = false, isTask = false) {
         this.summary = summary;
         this.dateStart = dateStart;
         this.dateEnd = dateEnd;
@@ -675,6 +692,7 @@ class CalendarEventDto {
         this.description = description;
         this.url = url;
         this.allDay = allDay;
+        this.isTask = isTask;
     }
 
     formatByPatternEvent(pattern) {
@@ -695,7 +713,8 @@ class CalendarEventDto {
             timeEnd: this.timeEnd || '',
             timeDisplay: timeDisplay,
             description: this.description || '',
-            url: this.url || ''
+            url: this.url || '',
+            isTask: this.isTask ? 'Задача' : 'Событие'
         };
 
         return pattern.replace(/\${(.*?)}/g, (match, key) => {
