@@ -69,9 +69,20 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 if (!calendarData) return null;
 
                 const icalText = calendarData.textContent;
+                
+                // Парсим VEVENT
                 const veventMatch = icalText.match(/BEGIN:VEVENT([\s\S]*?)END:VEVENT/);
+                if (veventMatch) {
+                    return this.parseYandexCalendar(veventMatch[1], false);
+                }
+                
+                // Парсим VTODO
+                const vtodoMatch = icalText.match(/BEGIN:VTODO([\s\S]*?)END:VTODO/);
+                if (vtodoMatch) {
+                    return this.parseYandexCalendar(vtodoMatch[1], true);
+                }
 
-                return veventMatch ? this.parseYandexCalendar(veventMatch) : null;
+                return null;
             } catch (error) {
                 console.error('Error parsing event:', error);
                 return null;
@@ -79,7 +90,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         }).filter(event => event !== null);
     }
 
-    parseYandexCalendar(data) {
+    parseYandexCalendar(data, isTask = false) {
         const lines = String(data).split('\n');
         const eventData = {};
 
@@ -90,32 +101,98 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 eventData.summary = line.substring(8);
             } else if (line.startsWith('DTSTART;TZID=')) {
                 const dateStr = line.substring(line.indexOf(':') + 1);
-                eventData.dateStart = this.parseYandexCalendarDate(dateStr);
+                const parsed = this.parseYandexCalendarDate(dateStr);
+                eventData.dateStart = parsed;
+                eventData.allDay = false;
+            } else if (line.startsWith('DTSTART;VALUE=DATE:')) {
+                const dateStr = line.substring(line.indexOf(':') + 1);
+                const parsed = this.parseAllDayDate(dateStr);
+                eventData.dateStart = parsed;
+                eventData.allDay = true;
+            } else if (line.startsWith('DTSTART:')) {
+                const dateStr = line.substring(8);
+                // Проверяем, содержит ли строка время или это только дата
+                if (dateStr.length === 8) {
+                    // Только дата (YYYYMMDD) - all-day событие
+                    const parsed = this.parseAllDayDate(dateStr);
+                    eventData.dateStart = parsed;
+                    eventData.allDay = true;
+                } else {
+                    const parsed = this.parseYandexCalendarDate(dateStr);
+                    eventData.dateStart = parsed;
+                    eventData.allDay = false;
+                }
             } else if (line.startsWith('DTEND;TZID=')) {
                 const dateStr = line.substring(line.indexOf(':') + 1);
                 eventData.dateEnd = this.parseYandexCalendarDate(dateStr);
+            } else if (line.startsWith('DTEND;VALUE=DATE:')) {
+                const dateStr = line.substring(line.indexOf(':') + 1);
+                eventData.dateEnd = this.parseAllDayDate(dateStr);
+            } else if (line.startsWith('DTEND:')) {
+                const dateStr = line.substring(6);
+                if (dateStr.length === 8) {
+                    eventData.dateEnd = this.parseAllDayDate(dateStr);
+                } else {
+                    eventData.dateEnd = this.parseYandexCalendarDate(dateStr);
+                }
             } else if (line.startsWith('DESCRIPTION:')) {
                 eventData.description = line.substring(12);
             } else if (line.startsWith('URL:')) {
                 eventData.url = line.substring(4);
+            } else if (line.startsWith('DUE:')) {
+                // Для задач (VTODO) - дедлайн
+                const dateStr = line.substring(4);
+                if (dateStr.length === 8) {
+                    eventData.dueDate = this.parseAllDayDate(dateStr);
+                } else {
+                    eventData.dueDate = this.parseYandexCalendarDate(dateStr);
+                }
+            } else if (line.startsWith('PRIORITY:')) {
+                eventData.priority = parseInt(line.substring(9));
+            } else if (line.startsWith('STATUS:')) {
+                eventData.status = line.substring(7);
             }
         }
+
+        // Для all-day событий время не показываем
+        const timeStart = eventData.allDay ? '' : this.getTimeOnly(eventData.dateStart);
+        const timeEnd = eventData.allDay ? '' : this.getTimeOnly(eventData.dateEnd);
 
         return new CalendarEventDto(
             eventData.summary,
             eventData.dateStart,
             eventData.dateEnd,
-            this.getTimeOnly(eventData.dateStart),
-            this.getTimeOnly(eventData.dateEnd),
+            timeStart,
+            timeEnd,
             eventData.description,
-            eventData.url
+            eventData.url,
+            isTask,
+            eventData.allDay || false,
+            eventData.dueDate,
+            eventData.priority,
+            eventData.status
         );
+    }
+
+    parseAllDayDate(dateStr) {
+        // Формат: YYYYMMDD
+        const year = parseInt(dateStr.substring(0, 4));
+        const month = parseInt(dateStr.substring(4, 6)) - 1;
+        const day = parseInt(dateStr.substring(6, 8));
+        
+        // Создаем дату в UTC, чтобы избежать проблем с часовым поясом
+        return new Date(Date.UTC(year, month, day));
     }
 
     getTimeOnly(dateString) {
         if (!dateString) return '';
         
         const date = new Date(dateString);
+        // Проверяем, является ли дата all-day (время 00:00:00 UTC)
+        if (date.getUTCHours() === 0 && date.getUTCMinutes() === 0 && date.getUTCSeconds() === 0) {
+            return ''; // Для all-day событий время не показываем
+        }
+        
         return date.toLocaleTimeString('ru-RU', {
             hour: '2-digit',
             minute: '2-digit'
@@ -160,7 +237,13 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             const events = await this.getEvents();
             const pattern = this.settings.pattern;
 
-            const sortedEvents = events.sort((a, b) => a.dateStart.getTime() - b.dateStart.getTime());
+            // Сортируем все события и задачи вместе
+            const sortedEvents = events.sort((a, b) => {
+                const dateA = a.dateStart || a.dueDate || new Date(0);
+                const dateB = b.dateStart || b.dueDate || new Date(0);
+                return dateA.getTime() - dateB.getTime();
+            });
+            
             const formattedEvents = await this.formatEventsByPattern(sortedEvents, pattern);
            
             const cursor = editor.getCursor();
@@ -230,12 +313,25 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                     <C:prop name="DESCRIPTION"/>
                     <C:prop name="URL"/>
                 </C:comp>
-                <C:comp name="VTIMEZONE"/></C:comp>
+                <C:comp name="VTODO">
+                    <C:prop name="SUMMARY"/>
+                    <C:prop name="DTSTART"/>
+                    <C:prop name="DUE"/>
+                    <C:prop name="DESCRIPTION"/>
+                    <C:prop name="URL"/>
+                    <C:prop name="PRIORITY"/>
+                    <C:prop name="STATUS"/>
+                </C:comp>
+                <C:comp name="VTIMEZONE"/>
+            </C:comp>
         </C:calendar-data>
     </D:prop>
     <C:filter>
         <C:comp-filter name="VCALENDAR">
             <C:comp-filter name="VEVENT">
+                <C:time-range start="${start}" end="${end}"/>
+            </C:comp-filter>
+            <C:comp-filter name="VTODO">
                 <C:time-range start="${start}" end="${end}"/>
             </C:comp-filter>
         </C:comp-filter>
@@ -430,14 +526,19 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
 
 class CalendarEventDto {
     summary = '';
-    dateStart = '';
-    dateEnd = '';
+    dateStart = null;
+    dateEnd = null;
     timeStart = '';
     timeEnd = '';
     description = '';
     url = '';
+    isTask = false;
+    allDay = false;
+    dueDate = null;
+    priority = null;
+    status = '';
 
-    constructor(summary, dateStart, dateEnd, timeStart, timeEnd, description, url) {
+    constructor(summary, dateStart, dateEnd, timeStart, timeEnd, description, url, isTask = false, allDay = false, dueDate = null, priority = null, status = '') {
         this.summary = summary;
         this.dateStart = dateStart;
         this.dateEnd = dateEnd;
@@ -445,11 +546,32 @@ class CalendarEventDto {
         this.timeEnd = timeEnd;
         this.description = description;
         this.url = url;
+        this.isTask = isTask;
+        this.allDay = allDay;
+        this.dueDate = dueDate;
+        this.priority = priority;
+        this.status = status;
     }
 
     formatByPatternEvent(pattern) {
+        // Добавляем дополнительные переменные для шаблона
+        const vars = {
+            summary: this.summary || '',
+            dateStart: this.dateStart ? this.dateStart.toLocaleDateString('ru-RU') : '',
+            dateEnd: this.dateEnd ? this.dateEnd.toLocaleDateString('ru-RU') : '',
+            timeStart: this.timeStart || '',
+            timeEnd: this.timeEnd || '',
+            description: this.description || '',
+            url: this.url || '',
+            isTask: this.isTask ? 'Задача' : 'Событие',
+            allDay: this.allDay ? 'Весь день' : '',
+            dueDate: this.dueDate ? this.dueDate.toLocaleDateString('ru-RU') : '',
+            priority: this.priority || '',
+            status: this.status || ''
+        };
+
         return pattern.replace(/\${(.*?)}/g, (match, key) => {
-            return this.hasOwnProperty(key) && this[key] ? this[key] : '';
+            return vars.hasOwnProperty(key) && vars[key] !== undefined && vars[key] !== null ? vars[key] : '';
         });
     }
 }
@@ -594,4 +716,4 @@ class SecureSettings {
     }
 }
 
-module.exports = YandexCalendarIntegrationPlugin
+module.exports = YandexCalendarIntegrationPlugin;
