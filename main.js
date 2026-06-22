@@ -72,7 +72,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 
                 // Парсим только VEVENT (события)
                 const veventMatch = icalText.match(/BEGIN:VEVENT([\s\S]*?)END:VEVENT/);
-                return veventMatch ? this.parseYandexCalendar(veventMatch[1], false) : null;
+                return veventMatch ? this.parseYandexCalendar(veventMatch[1]) : null;
             } catch (error) {
                 console.error('Error parsing event:', error);
                 return null;
@@ -80,7 +80,7 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         }).filter(event => event !== null);
     }
 
-    parseYandexCalendar(data, isTask = false) {
+    parseYandexCalendar(data) {
         const lines = String(data).split('\n');
         const eventData = {};
 
@@ -91,23 +91,19 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
                 eventData.summary = line.substring(8);
             } else if (line.startsWith('DTSTART;TZID=')) {
                 const dateStr = line.substring(line.indexOf(':') + 1);
-                const parsed = this.parseYandexCalendarDate(dateStr);
-                eventData.dateStart = parsed;
+                eventData.dateStart = this.parseYandexCalendarDate(dateStr);
                 eventData.allDay = false;
             } else if (line.startsWith('DTSTART;VALUE=DATE:')) {
                 const dateStr = line.substring(line.indexOf(':') + 1);
-                const parsed = this.parseAllDayDate(dateStr);
-                eventData.dateStart = parsed;
+                eventData.dateStart = this.parseAllDayDate(dateStr);
                 eventData.allDay = true;
             } else if (line.startsWith('DTSTART:')) {
                 const dateStr = line.substring(8);
                 if (dateStr.length === 8) {
-                    const parsed = this.parseAllDayDate(dateStr);
-                    eventData.dateStart = parsed;
+                    eventData.dateStart = this.parseAllDayDate(dateStr);
                     eventData.allDay = true;
                 } else {
-                    const parsed = this.parseYandexCalendarDate(dateStr);
-                    eventData.dateStart = parsed;
+                    eventData.dateStart = this.parseYandexCalendarDate(dateStr);
                     eventData.allDay = false;
                 }
             } else if (line.startsWith('DTEND;TZID=')) {
@@ -140,7 +136,8 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
             timeStart,
             timeEnd,
             eventData.description,
-            eventData.url
+            eventData.url,
+            eventData.allDay || false
         );
     }
 
@@ -303,7 +300,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
         const dateFormat = dailyNotes.getFormat();
         const fileName = activeFile.basename;
         
-        // Проверяем, начинается ли имя файла с даты
         if (this.isDailyNote(dateFormat, fileName)) {
             const noteDate = this.parseDateFromString(dateFormat, fileName);
             new Notice(`Дата заметки: ${noteDate.toLocaleDateString('ru-RU')}`);
@@ -316,7 +312,6 @@ class YandexCalendarIntegrationPlugin extends obsidian.Plugin {
 
     isDailyNote(template, str) {
         const regexPattern = this.createDateRegexPattern(template);
-        // Проверяем, что строка НАЧИНАЕТСЯ с даты
         return new RegExp(`^${regexPattern}`).test(str);
     }
 
@@ -469,8 +464,9 @@ class CalendarEventDto {
     timeEnd = '';
     description = '';
     url = '';
+    allDay = false;
 
-    constructor(summary, dateStart, dateEnd, timeStart, timeEnd, description, url) {
+    constructor(summary, dateStart, dateEnd, timeStart, timeEnd, description, url, allDay = false) {
         this.summary = summary;
         this.dateStart = dateStart;
         this.dateEnd = dateEnd;
@@ -478,36 +474,34 @@ class CalendarEventDto {
         this.timeEnd = timeEnd;
         this.description = description;
         this.url = url;
+        this.allDay = allDay;
     }
 
     formatByPatternEvent(pattern) {
-    // Формируем отображение времени
-    let timeDisplay = '';
-    if (this.allDay) {
-        timeDisplay = 'Весь день';
-    } else if (this.timeStart && this.timeEnd) {
-        timeDisplay = `${this.timeStart} - ${this.timeEnd}`;
-    } else if (this.timeStart) {
-        timeDisplay = this.timeStart;
-    } else {
-        timeDisplay = '';
+        let timeDisplay = '';
+        if (this.allDay) {
+            timeDisplay = 'Весь день';
+        } else if (this.timeStart && this.timeEnd) {
+            timeDisplay = `${this.timeStart} - ${this.timeEnd}`;
+        } else if (this.timeStart) {
+            timeDisplay = this.timeStart;
+        }
+
+        const vars = {
+            summary: this.summary || '',
+            dateStart: this.dateStart ? this.dateStart.toLocaleDateString('ru-RU') : '',
+            dateEnd: this.dateEnd ? this.dateEnd.toLocaleDateString('ru-RU') : '',
+            timeStart: this.timeStart || '',
+            timeEnd: this.timeEnd || '',
+            timeDisplay: timeDisplay,
+            description: this.description || '',
+            url: this.url || ''
+        };
+
+        return pattern.replace(/\${(.*?)}/g, (match, key) => {
+            return vars.hasOwnProperty(key) && vars[key] !== undefined && vars[key] !== null ? vars[key] : '';
+        });
     }
-
-    const vars = {
-        summary: this.summary || '',
-        dateStart: this.dateStart ? this.dateStart.toLocaleDateString('ru-RU') : '',
-        dateEnd: this.dateEnd ? this.dateEnd.toLocaleDateString('ru-RU') : '',
-        timeStart: this.timeStart || '',
-        timeEnd: this.timeEnd || '',
-        timeDisplay: timeDisplay,  // ← новое поле
-        description: this.description || '',
-        url: this.url || ''
-    };
-
-    return pattern.replace(/\${(.*?)}/g, (match, key) => {
-        return vars.hasOwnProperty(key) && vars[key] !== undefined && vars[key] !== null ? vars[key] : '';
-    });
-}
 }
 
 class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
@@ -598,7 +592,7 @@ class YandexCalendarIntegrationSettingTab extends obsidian.PluginSettingTab {
 }
 
 const DEFAULT_SETTINGS = {
-    pattern: "- [ ] ${timeStart} - ${timeEnd}: ${summary}\n\tОписание: ${description}\n\tСсылка на событие: ${url}",
+    pattern: "- [ ] ${timeDisplay}: ${summary}\n\tОписание: ${description}\n\tСсылка на событие: ${url}",
     email: ''
 }
 
